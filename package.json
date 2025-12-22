@@ -34,10 +34,11 @@
     "pw:install": "playwright install firefox",
 
     "demo": "npm run build && node examples/demo.mjs",
+    "demo:debug": "npm run build && node examples/demo.mjs --debug",
     "demo:headful": "npm run build && node examples/demo.mjs --headful",
     "demo:minify-js": "npm run build && node examples/demo.mjs --minify-js",
     "demo:clean": "node examples/clean.mjs",
-    "demo:install": "npm run pw:install"
+    "demo:report": "node examples/report.mjs"
   },
   "dependencies": {
     "debug": "^4.4.3",

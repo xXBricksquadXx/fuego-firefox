@@ -2,8 +2,8 @@ import debug from "debug";
 import type { Browser, Page } from "playwright-firefox";
 import { minify as minifyHTML } from "html-minifier-terser";
 import type { Options as MinifyOptions } from "html-minifier-terser";
-import { closeBrowser, getOrCreateBrowser, peekBrowser, type BrowserOptions } from "./browser";
-import { safeURL } from "./utils";
+import { closeBrowser, getOrCreateBrowser, peekBrowser, type BrowserOptions } from "./browser.js";
+import { safeURL } from "./utils.js";
 const debugRequest = debug("fuego:request");
 const DEFAULT_BLOCKED_TYPES = ["stylesheet", "image", "media", "font"] as const;
 export type ResourceFilterCtx = { url: string; type: string };
@@ -18,10 +18,10 @@ export type RequestOptions = BrowserOptions & {
   minify?: boolean | MinifyOptions;
   resourceFilter?: (ctx: ResourceFilterCtx) => boolean;
   blockCrossOrigin?: boolean;
-  blockResourceTypes?: false | string[];
   htmlSelector?: string;
   userAgent?: string;
   manualTimeoutMs?: number;
+  blockResourceTypes?: false | string[];
 };
 const DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_3) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/140.0 Prerender";
@@ -35,19 +35,21 @@ async function readContent(page: Page, options: RequestOptions) {
   }
   return page.content();
 }
+function getBlockedTypes(options: RequestOptions): Set<string> {
+  if (options.blockResourceTypes === false) return new Set();
+  if (Array.isArray(options.blockResourceTypes)) return new Set(options.blockResourceTypes);
+  return new Set(DEFAULT_BLOCKED_TYPES);
+}
 async function getHTML(browser: Browser, options: RequestOptions): Promise<string> {
   options.onBeforeRequest?.(options.url);
   const ctx = await browser.newContext({
-    userAgent: options.userAgent ?? DEFAULT_UA
+    userAgent: options.userAgent ?? DEFAULT_UA,
   });
   const page = await ctx.newPage();
-  const blockedTypes =
-    options.blockResourceTypes === false
-      ? null
-      : new Set(options.blockResourceTypes ?? DEFAULT_BLOCKED_TYPES);
   try {
     if (options.onCreatedPage) await options.onCreatedPage(page);
     const root = safeURL(options.url);
+    const blockedTypes = getBlockedTypes(options);
     await page.route("**/*", async (route) => {
       const req = route.request();
       const type = req.resourceType();
@@ -64,7 +66,7 @@ async function getHTML(browser: Browser, options: RequestOptions): Promise<strin
         const u = safeURL(resourceURL);
         if (!u || u.host !== root.host) return abort();
       }
-      if (blockedTypes && blockedTypes.has(type)) return abort();
+      if (blockedTypes.has(type)) return abort();
       if (options.resourceFilter && !options.resourceFilter({ url: resourceURL, type })) {
         return abort();
       }
@@ -80,7 +82,7 @@ async function getHTML(browser: Browser, options: RequestOptions): Promise<strin
       await page.exposeFunction(fnName, (result: Result) => resolveResult?.(result));
     }
     await page.goto(options.url, {
-      waitUntil: options.manually ? "domcontentloaded" : "networkidle"
+      waitUntil: options.manually ? "domcontentloaded" : "networkidle",
     });
     let content: string;
     if (options.manually) {
@@ -90,8 +92,8 @@ async function getHTML(browser: Browser, options: RequestOptions): Promise<strin
           ? await Promise.race<Result>([
               resultPromise,
               new Promise<Result>((_, rej) =>
-                setTimeout(() => rej(new Error(`Manual snapshot timed out after ${t}ms`)), t)
-              )
+                setTimeout(() => rej(new Error(`Manual snapshot timed out after ${t}ms`)), t),
+              ),
             ])
           : await resultPromise;
       content = result.content;
@@ -119,9 +121,9 @@ async function getHTML(browser: Browser, options: RequestOptions): Promise<strin
             removeAttributeQuotes: true,
             removeScriptTypeAttributes: true,
             removeRedundantAttributes: true,
-            removeStyleLinkTypeAttributes: true
+            removeStyleLinkTypeAttributes: true,
           };
-    return await minifyHTML(content, minifyOptions);
+    return minifyHTML(content, minifyOptions);
   } finally {
     await page.close().catch(() => {});
     await ctx.close().catch(() => {});
@@ -130,7 +132,7 @@ async function getHTML(browser: Browser, options: RequestOptions): Promise<strin
 export async function request(options: RequestOptions) {
   const browser = await getOrCreateBrowser({
     proxy: options.proxy,
-    headless: options.headless
+    headless: options.headless,
   });
   return getHTML(browser, options);
 }
