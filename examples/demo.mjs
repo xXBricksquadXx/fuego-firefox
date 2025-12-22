@@ -112,12 +112,12 @@ async function maybeMinifyJs(inputText) {
   }
 }
 
-function chunkAndWrite(text, dir, baseName, chunkBytes) {
+function chunkAndWrite(text, caseDir, baseName, chunkBytes) {
   if (!chunkBytes || chunkBytes <= 0) return;
   const buf = Buffer.from(text, 'utf8');
   if (buf.length <= chunkBytes) return;
 
-  const outDir = join(dir, 'assets', 'js-chunks', baseName);
+  const outDir = join(caseDir, 'assets', 'js-chunks', baseName);
   ensureDir(outDir);
 
   let off = 0;
@@ -209,10 +209,8 @@ function attachCapture(page, caseDir, manifest) {
         rel = join('assets', kind, fileBase);
       }
 
-      const abs = join(caseDir, rel);
-      writeBin(abs, buf);
+      writeBin(join(caseDir, rel), buf);
 
-      // Optional: JS minify + chunking for local JS
       if (!isCDN && kind === 'js') {
         const originalText = buf.toString('utf8');
 
@@ -226,13 +224,11 @@ function attachCapture(page, caseDir, manifest) {
             );
             writeText(join(caseDir, minRel), min);
 
-            // chunk minified output too
             const baseName = fileBase.replace(/\.[^.]+$/, '');
             chunkAndWrite(min, caseDir, `${baseName}__min`, CHUNK_JS);
           }
         }
 
-        // chunk original output
         const baseName = fileBase.replace(/\.[^.]+$/, '');
         chunkAndWrite(originalText, caseDir, `${baseName}__orig`, CHUNK_JS);
       }
@@ -313,47 +309,28 @@ async function runCase(runDir, name, opts, { capture = false } = {}) {
 }
 
 async function runComponents(runDir) {
+  console.log(`\n=== components_slices ===`);
   const selectors = ['head', 'header', 'main', 'footer', 'body'];
-  const FN = '__FUEGO_COMPONENT__';
 
   const caseDir = makeCaseDir(runDir, 'components_slices');
   const index = [];
 
   for (const sel of selectors) {
-    const html = await request({
+    // IMPORTANT: do not use manual mode here; it’s not needed and can timeout.
+    const inner = await request({
       url: TARGET,
-      manually: FN,
-      manualTimeoutMs: 30_000,
       wait: 'body',
-      onCreatedPage: async (page) => {
-        // run once after DOM is ready; avoid event-handler await chains
-        page.once('domcontentloaded', () => {
-          setTimeout(async () => {
-            try {
-              if (page.isClosed()) return;
-              await page.evaluate(
-                ({ fnName, selector }) => {
-                  const fn = window[fnName];
-                  if (typeof fn !== 'function') return;
-                  const el = document.querySelector(selector);
-                  fn({ content: el ? el.outerHTML : '' });
-                },
-                { fnName: FN, selector: sel }
-              );
-            } catch {
-              // ignore if page closes while timer fires
-            }
-          }, 250);
-        });
-      },
+      htmlSelector: sel,
     });
 
+    const wrapped = `<${sel}>${inner}</${sel}>\n`;
     const file = join(caseDir, 'components', `${slug(sel)}.html`);
-    writeText(file, html);
+    writeText(file, wrapped);
+
     index.push({
       selector: sel,
       file: file.replaceAll('\\', '/'),
-      bytes: Buffer.byteLength(html, 'utf8'),
+      bytes: Buffer.byteLength(wrapped, 'utf8'),
     });
   }
 
@@ -361,24 +338,23 @@ async function runComponents(runDir) {
     join(caseDir, 'components', 'index.json'),
     JSON.stringify(index, null, 2)
   );
-  console.log(`\n=== components_slices ===`);
   console.log(`saved: ${join(caseDir, 'components')}`);
 }
 
 async function runManualInjected(runDir) {
-  const FN = '__FUEGO_SNAPSHOT__'; // avoid collisions with site globals
+  const FN = '__FUEGO_SNAPSHOT__';
 
   await runCase(runDir, 'manual_mode_injected', {
     url: TARGET,
     manually: FN,
-    manualTimeoutMs: 30_000,
+    manualTimeoutMs: 60_000, // give SPA hydration more room
     onCreatedPage: async (page) => {
       page.once('domcontentloaded', () => {
         setTimeout(async () => {
           try {
             if (page.isClosed()) return;
             await page.evaluate((fnName) => {
-              const fn = window[fnName];
+              const fn = globalThis[fnName];
               if (typeof fn !== 'function') return;
               fn({ content: document.documentElement.outerHTML });
             }, FN);
@@ -391,66 +367,83 @@ async function runManualInjected(runDir) {
   });
 }
 
+async function safe(label, fn) {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`\n[case failed] ${label}`);
+    console.error(e);
+  }
+}
+
 async function main() {
   const runDir = makeRunDir();
   console.log(`\nRun dir: ${runDir}\n`);
 
-  await runCase(runDir, 'basic', { url: TARGET });
-  await runCase(runDir, 'wait_selector_body', { url: TARGET, wait: 'body' });
-  await runCase(runDir, 'wait_1500ms', { url: TARGET, wait: 1500 });
-  await runCase(runDir, 'htmlSelector_body', {
-    url: TARGET,
-    htmlSelector: 'body',
-  });
-  await runCase(runDir, 'minify_true', { url: TARGET, minify: true });
-
-  await runCase(runDir, 'resourceFilter_block_analytics', {
-    url: TARGET,
-    resourceFilter: ({ url }) => {
-      const u = url.toLowerCase();
-      if (
-        u.includes('googletagmanager') ||
-        u.includes('google-analytics') ||
-        u.includes('gtag') ||
-        u.includes('segment') ||
-        u.includes('hotjar') ||
-        u.includes('clarity.ms')
-      ) {
-        return false;
-      }
-      return true;
-    },
-  });
-
-  await runCase(runDir, 'blockCrossOrigin_true', {
-    url: TARGET,
-    blockCrossOrigin: true,
-  });
-
-  await runCase(runDir, 'hooks_headful', {
-    url: TARGET,
-    headless: false,
-    onBeforeRequest: (url) => console.log('onBeforeRequest:', url),
-    onAfterRequest: (url) => console.log('onAfterRequest:', url),
-    onCreatedPage: async (page) => {
-      await page.setViewportSize({ width: 1280, height: 720 });
-    },
-  });
-
-  // capture everything: CSS/fonts/img too
-  await runCase(
-    runDir,
-    'capture_assets_full',
-    {
-      url: TARGET,
-      wait: 1500,
-      blockResourceTypes: false,
-    },
-    { capture: true }
+  await safe('basic', () => runCase(runDir, 'basic', { url: TARGET }));
+  await safe('wait_selector_body', () =>
+    runCase(runDir, 'wait_selector_body', { url: TARGET, wait: 'body' })
+  );
+  await safe('wait_1500ms', () =>
+    runCase(runDir, 'wait_1500ms', { url: TARGET, wait: 1500 })
+  );
+  await safe('htmlSelector_body', () =>
+    runCase(runDir, 'htmlSelector_body', { url: TARGET, htmlSelector: 'body' })
+  );
+  await safe('minify_true', () =>
+    runCase(runDir, 'minify_true', { url: TARGET, minify: true })
   );
 
-  await runComponents(runDir);
-  await runManualInjected(runDir);
+  await safe('resourceFilter_block_analytics', () =>
+    runCase(runDir, 'resourceFilter_block_analytics', {
+      url: TARGET,
+      resourceFilter: ({ url }) => {
+        const u = url.toLowerCase();
+        if (
+          u.includes('googletagmanager') ||
+          u.includes('google-analytics') ||
+          u.includes('gtag') ||
+          u.includes('segment') ||
+          u.includes('hotjar') ||
+          u.includes('clarity.ms')
+        ) {
+          return false;
+        }
+        return true;
+      },
+    })
+  );
+
+  await safe('blockCrossOrigin_true', () =>
+    runCase(runDir, 'blockCrossOrigin_true', {
+      url: TARGET,
+      blockCrossOrigin: true,
+    })
+  );
+
+  await safe('hooks_headful', () =>
+    runCase(runDir, 'hooks_headful', {
+      url: TARGET,
+      headless: false,
+      onBeforeRequest: (url) => console.log('onBeforeRequest:', url),
+      onAfterRequest: (url) => console.log('onAfterRequest:', url),
+      onCreatedPage: async (page) => {
+        await page.setViewportSize({ width: 1280, height: 720 });
+      },
+    })
+  );
+
+  await safe('capture_assets_full', () =>
+    runCase(
+      runDir,
+      'capture_assets_full',
+      { url: TARGET, wait: 1500, blockResourceTypes: false },
+      { capture: true }
+    )
+  );
+
+  await safe('components_slices', () => runComponents(runDir));
+  await safe('manual_mode_injected', () => runManualInjected(runDir));
 
   await cleanup();
   console.log('\nDone.');
