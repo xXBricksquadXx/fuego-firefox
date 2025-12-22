@@ -1,553 +1,685 @@
-import Debug from 'debug';
 import {
   mkdirSync,
   writeFileSync,
-  rmSync,
-  existsSync,
   readFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
 } from 'node:fs';
-import { join, basename, extname, relative as relPath } from 'node:path';
+import { join, dirname, relative, extname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
-import { URL } from 'node:url';
-import { request, cleanup } from '../dist/index.mjs';
-const args = process.argv.slice(2);
-function flag(name) {
-  return args.includes(name);
+
+function parseArgs(argv) {
+  const out = { _: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith('--')) {
+      out._.push(a);
+      continue;
+    }
+    const raw = a.slice(2);
+    const eq = raw.indexOf('=');
+    const k = (eq >= 0 ? raw.slice(0, eq) : raw).replace(/-([a-z])/g, (_, c) =>
+      c.toUpperCase()
+    );
+    const v =
+      eq >= 0
+        ? raw.slice(eq + 1)
+        : argv[i + 1] && !argv[i + 1].startsWith('--')
+        ? argv[++i]
+        : true;
+    out[k] = v;
+  }
+  return out;
 }
-function arg(name, fallback) {
-  const idx = args.indexOf(name);
-  if (idx >= 0 && args[idx + 1]) return args[idx + 1];
-  return fallback;
-}
-function csvSet(v) {
-  if (!v) return new Set();
-  return new Set(
-    String(v)
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
-}
-const TARGET = arg('--url', 'https://rosehillops.com/');
-const HEADFUL = flag('--headful');
-const MINIFY_JS = flag('--minify-js');
-const CHUNK_JS = Number(arg('--chunk-js', '200000'));
-const DO_CLEAN = flag('--clean');
-const ONLY = csvSet(arg('--only', ''));
-const SKIP = csvSet(arg('--skip', ''));
-const DEBUG_ON = flag('--debug');
-if (DEBUG_ON) {
-  Debug.enable('fuego:*');
-}
-const OUTROOT = '.demo-out';
-const RUNS_DIR = join(OUTROOT, 'runs');
-const targetURL = new URL(TARGET);
-if (DO_CLEAN) {
-  if (existsSync(OUTROOT)) rmSync(OUTROOT, { recursive: true, force: true });
-}
-function shouldRun(name) {
-  if (ONLY.size > 0 && !ONLY.has(name)) return false;
-  if (SKIP.has(name)) return false;
-  return true;
-}
-function ensureDir(p) {
-  mkdirSync(p, { recursive: true });
-}
-function writeText(file, text) {
-  ensureDir(join(file, '..'));
-  writeFileSync(file, text, 'utf8');
-}
-function writeBin(file, buf) {
-  ensureDir(join(file, '..'));
-  writeFileSync(file, buf);
-}
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-function nowStamp() {
+
+function nowId() {
   const d = new Date();
-  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(
-    d.getDate()
-  )}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(
+    d.getHours()
+  )}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
+
 function slug(s) {
-  return s
-    .replace(/[^a-z0-9-_]+/gi, '_')
-    .replace(/_+/g, '_')
-    .toLowerCase();
+  return String(s)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
-function sha(url) {
-  return createHash('sha1').update(url).digest('hex').slice(0, 10);
+
+function sha1(s) {
+  return createHash('sha1').update(s).digest('hex').slice(0, 10);
 }
-function kindFromContentType(ct) {
-  const v = (ct || '').toLowerCase();
-  if (v.includes('text/css')) return 'css';
-  if (v.includes('javascript') || v.includes('ecmascript')) return 'js';
-  if (v.includes('application/json')) return 'json';
-  if (v.includes('text/html')) return 'html';
-  if (v.startsWith('image/')) return 'img';
+
+function toPosix(p) {
+  return p.replace(/\\/g, '/');
+}
+
+function listDirs(p) {
+  if (!existsSync(p)) return [];
+  return readdirSync(p, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => join(p, d.name));
+}
+
+// Minimal recursive file walker (used for JS minify)
+function walkFiles(root, exts) {
+  const out = [];
+  const stack = [root];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || !existsSync(cur)) continue;
+    for (const ent of readdirSync(cur, { withFileTypes: true })) {
+      const abs = join(cur, ent.name);
+      if (ent.isDirectory()) stack.push(abs);
+      else if (ent.isFile() && exts.has(extname(ent.name))) out.push(abs);
+    }
+  }
+  return out;
+}
+
+function chooseBucket({ url, type, contentType }) {
+  const u = url.toLowerCase();
+  const ct = (contentType ?? '').toLowerCase();
+
+  if (type === 'stylesheet' || ct.includes('text/css') || u.endsWith('.css'))
+    return 'css';
   if (
-    v.includes('font/') ||
-    v.includes('woff') ||
-    v.includes('ttf') ||
-    v.includes('otf')
+    type === 'script' ||
+    ct.includes('javascript') ||
+    u.endsWith('.js') ||
+    u.endsWith('.mjs')
   )
-    return 'font';
+    return 'js';
+  if (ct.startsWith('image/') || type === 'image') return 'img';
+  if (ct.startsWith('font/') || type === 'font') return 'font';
+  if (ct.includes('json') || u.endsWith('.json')) return 'json';
   return 'other';
 }
-function extGuess(kind, urlStr, ct) {
-  const u = new URL(urlStr);
-  const ext = extname(u.pathname);
-  if (ext) return ext;
-  if (kind === 'js') return '.js';
-  if (kind === 'css') return '.css';
-  if (kind === 'json') return '.json';
-  if (kind === 'html') return '.html';
-  if (kind === 'img') {
-    const v = (ct || '').toLowerCase();
-    if (v.includes('png')) return '.png';
-    if (v.includes('jpeg')) return '.jpg';
-    if (v.includes('webp')) return '.webp';
-    if (v.includes('svg')) return '.svg';
-    if (v.includes('gif')) return '.gif';
+
+function filenameFor(url, contentType) {
+  let ext = extname(new URL(url).pathname);
+  if (!ext) {
+    const ct = (contentType ?? '').toLowerCase();
+    if (ct.includes('text/css')) ext = '.css';
+    else if (ct.includes('javascript')) ext = '.js';
+    else if (ct.includes('json')) ext = '.json';
+    else if (ct.startsWith('image/'))
+      ext = `.${ct.split('/')[1].split(';')[0]}`;
+    else if (ct.startsWith('font/')) ext = `.${ct.split('/')[1].split(';')[0]}`;
+    else ext = '.bin';
   }
-  return '.bin';
+  const base = basename(new URL(url).pathname) || 'asset';
+  const cleanBase = slug(base.replace(extname(base), '')) || 'asset';
+  return `${cleanBase}_${sha1(url)}${ext}`;
 }
-async function maybeMinifyJs(inputText) {
-  if (!MINIFY_JS) return null;
-  try {
-    const esbuild = await import('esbuild');
-    const out = await esbuild.transform(inputText, {
-      minify: true,
-      loader: 'js',
-      sourcemap: false,
+
+function relFrom(baseDir, absPath) {
+  return toPosix(relative(baseDir, absPath));
+}
+
+function inlineOrRelPath({
+  fromDir,
+  caseDir,
+  urlMap,
+  absUrl,
+  inline,
+  maxInlineBytes,
+}) {
+  const relPath = urlMap.get(absUrl);
+  if (!relPath) return { kind: 'none' };
+
+  const absPath = join(caseDir, relPath);
+  if (!existsSync(absPath)) return { kind: 'none' };
+
+  const buf = readFileSync(absPath);
+  if (inline && buf.length <= maxInlineBytes) {
+    return { kind: 'inline', text: buf.toString('utf8') };
+  }
+
+  const rel = relFrom(fromDir, absPath);
+  return { kind: 'link', href: rel };
+}
+
+function buildSmokeHtml({
+  html,
+  caseDir,
+  urlMap,
+  targetUrl,
+  maxInlineBytes = 800_000,
+}) {
+  const offlineDir = join(caseDir, 'offline');
+  mkdirSync(offlineDir, { recursive: true });
+
+  const fromDir = offlineDir;
+
+  // Inline CSS
+  html = html.replace(/<link\b[^>]*rel=["']?stylesheet["']?[^>]*>/gi, (tag) => {
+    const hrefMatch = tag.match(/\bhref=["']([^"']+)["']/i);
+    if (!hrefMatch) return tag;
+
+    const absUrl = new URL(hrefMatch[1], targetUrl).toString();
+    const r = inlineOrRelPath({
+      fromDir,
+      caseDir,
+      urlMap,
+      absUrl,
+      inline: true,
+      maxInlineBytes,
     });
-    return out.code;
-  } catch {
-    return null;
-  }
-}
-function chunkAndWrite(text, caseDir, baseName, chunkBytes) {
-  if (!chunkBytes || chunkBytes <= 0) return;
-  const buf = Buffer.from(text, 'utf8');
-  if (buf.length <= chunkBytes) return;
-  const outDir = join(caseDir, 'assets', 'js-chunks', baseName);
-  ensureDir(outDir);
-  let off = 0;
-  let i = 0;
-  while (off < buf.length) {
-    const end = Math.min(off + chunkBytes, buf.length);
-    const part = buf.slice(off, end);
-    const file = join(outDir, `${String(i).padStart(3, '0')}.js`);
-    writeBin(file, part);
-    off = end;
-    i++;
-  }
-}
-function makeRunDir() {
-  const runId = `${nowStamp()}__${slug(targetURL.host)}`;
-  const runDir = join(RUNS_DIR, runId);
-  ensureDir(runDir);
-  ensureDir(join(runDir, 'cases'));
-  writeText(
-    join(runDir, 'run.json'),
-    JSON.stringify(
-      {
-        target: TARGET,
-        headful: HEADFUL,
-        minifyJs: MINIFY_JS,
-        chunkJsBytes: CHUNK_JS,
-        only: [...ONLY],
-        skip: [...SKIP],
-        debug: DEBUG_ON,
-        startedAt: new Date().toISOString(),
-      },
-      null,
-      2
-    )
-  );
-  return runDir;
-}
-function makeCaseDir(runDir, name) {
-  const dir = join(runDir, 'cases', slug(name));
-  ensureDir(dir);
-  ensureDir(join(dir, 'html'));
-  ensureDir(join(dir, 'components'));
-  ensureDir(join(dir, 'offline'));
-  ensureDir(join(dir, 'assets', 'css'));
-  ensureDir(join(dir, 'assets', 'js'));
-  ensureDir(join(dir, 'assets', 'js-min'));
-  ensureDir(join(dir, 'assets', 'js-chunks'));
-  ensureDir(join(dir, 'assets', 'img'));
-  ensureDir(join(dir, 'assets', 'font'));
-  ensureDir(join(dir, 'assets', 'json'));
-  ensureDir(join(dir, 'assets', 'other'));
-  ensureDir(join(dir, 'cdn'));
-  return dir;
-}
-function attachCapture(page, caseDir, manifest) {
-  page.on('response', async (resp) => {
-    try {
-      const urlStr = resp.url();
-      if (!urlStr.startsWith('http')) return;
-      const status = resp.status();
-      const headers = resp.headers();
-      const ct = headers['content-type'] || '';
-      const host = new URL(urlStr).host;
-      const isCDN = host !== targetURL.host;
-      if (status === 304 || (status >= 300 && status < 400)) {
-        manifest.responses.push({ url: urlStr, status, ct, skipped: true });
-        return;
-      }
-      const buf = await resp.body().catch(() => null);
-      if (!buf || buf.length === 0) {
-        manifest.responses.push({ url: urlStr, status, ct, empty: true });
-        return;
-      }
-      const kind = kindFromContentType(ct);
-      const ext = extGuess(kind, urlStr, ct);
-      const base = basename(new URL(urlStr).pathname) || 'asset';
-      const fileBase = `${sha(urlStr)}__${slug(base || 'asset')}${ext}`;
-      let rel;
-      if (isCDN) {
-        rel = join('cdn', slug(host), kind, fileBase);
-      } else {
-        rel = join('assets', kind, fileBase);
-      }
-      writeBin(join(caseDir, rel), buf);
-      if (!isCDN && kind === 'js') {
-        const originalText = buf.toString('utf8');
-        if (MINIFY_JS) {
-          const min = await maybeMinifyJs(originalText);
-          if (min) {
-            const minRel = join(
-              'assets',
-              'js-min',
-              fileBase.replace(/\.js$/i, '.min.js')
-            );
-            writeText(join(caseDir, minRel), min);
-            const baseName = fileBase.replace(/\.[^.]+$/, '');
-            chunkAndWrite(min, caseDir, `${baseName}__min`, CHUNK_JS);
-          }
-        }
-        const baseName = fileBase.replace(/\.[^.]+$/, '');
-        chunkAndWrite(originalText, caseDir, `${baseName}__orig`, CHUNK_JS);
-      }
-      manifest.responses.push({
-        url: urlStr,
-        status,
-        ct,
-        bytes: buf.length,
-        file: rel.replaceAll('\\', '/'),
-      });
-    } catch (e) {
-      manifest.errors.push(String(e?.message || e));
+
+    if (r.kind === 'inline') {
+      return `<style data-href="${hrefMatch[1]}">\n${r.text}\n</style>`;
     }
+    if (r.kind === 'link') {
+      return tag.replace(hrefMatch[1], r.href);
+    }
+    return tag;
   });
-  page.on('requestfailed', (req) => {
-    manifest.failed.push({
-      url: req.url(),
-      type: req.resourceType(),
-      method: req.method(),
-      failure: req.failure()?.errorText || 'unknown',
-    });
-  });
-  page.on('console', (msg) => {
-    manifest.console.push({
-      type: msg.type(),
-      text: msg.text(),
-    });
-  });
-}
-function buildUrlMap(caseDir, responses) {
-  const map = new Map();
-  for (const r of responses) {
-    if (!r?.url || !r?.file) continue;
-    const abs = r.url;
-    const fileAbs = join(caseDir, r.file);
-    const relFromOffline = relPath(
-      join(caseDir, 'offline'),
-      fileAbs
-    ).replaceAll('\\', '/');
-    map.set(abs, relFromOffline);
-    try {
-      const u = new URL(abs);
-      if (u.host === targetURL.host) {
-        const p = u.pathname + u.search;
-        map.set(p, relFromOffline);
-        map.set(u.pathname, relFromOffline);
+
+  // Inline JS
+  html = html.replace(
+    /<script\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
+    (m, pre, src, post) => {
+      const absUrl = new URL(src, targetUrl).toString();
+      const r = inlineOrRelPath({
+        fromDir,
+        caseDir,
+        urlMap,
+        absUrl,
+        inline: true,
+        maxInlineBytes,
+      });
+
+      if (r.kind === 'inline') {
+        // Keep attributes except src=
+        const attrs = `${pre} ${post}`.replace(/\s+/g, ' ').trim();
+        return `<script ${attrs} data-src="${src}">\n${r.text}\n</script>`;
       }
-    } catch {}
-  }
-  return map;
-}
-function resolveMaybe(urlValue) {
-  if (!urlValue) return null;
-  if (urlValue.startsWith('data:')) return urlValue;
-  try {
-    if (urlValue.startsWith('//')) return `${targetURL.protocol}${urlValue}`;
-    if (urlValue.startsWith('http://') || urlValue.startsWith('https://'))
-      return urlValue;
-    return new URL(urlValue, TARGET).toString();
-  } catch {
-    return null;
-  }
-}
-function rewriteToLocal(html, urlMap) {
-  return html.replace(/\b(href|src)=["']([^"']+)["']/gi, (m, attr, value) => {
-    const abs = resolveMaybe(value);
-    const mapped =
-      urlMap.get(value) ||
-      (abs ? urlMap.get(abs) : null) ||
-      (abs ? urlMap.get(new URL(abs).pathname + new URL(abs).search) : null) ||
-      (abs ? urlMap.get(new URL(abs).pathname) : null);
-    if (!mapped) return m;
-    return `${attr}="${mapped}"`;
-  });
-}
-function inlineCssJs(html, urlMap, caseDir) {
-  html = html.replace(/<link\b([^>]*?)>/gi, (m, attrs) => {
-    const relMatch = attrs.match(/\brel=["']stylesheet["']/i);
-    const hrefMatch = attrs.match(/\bhref=["']([^"']+)["']/i);
-    if (!relMatch || !hrefMatch) return m;
-    const href = hrefMatch[1];
-    const abs = resolveMaybe(href);
-    const mapped =
-      urlMap.get(href) ||
-      (abs ? urlMap.get(abs) : null) ||
-      (abs ? urlMap.get(new URL(abs).pathname + new URL(abs).search) : null) ||
-      (abs ? urlMap.get(new URL(abs).pathname) : null);
-    if (!mapped) return m;
-    const fileAbs = join(caseDir, 'offline', mapped);
-    let css = '';
-    try {
-      css = readFileSync(fileAbs, 'utf8');
-    } catch {
+      if (r.kind === 'link') {
+        return m.replace(src, r.href);
+      }
       return m;
     }
-    return `<style data-href="${href}">\n${css}\n</style>`;
-  });
+  );
+
+  // Rewrite <img src> to local if captured (don’t inline)
   html = html.replace(
-    /<script\b([^>]*?)\bsrc=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
+    /<img\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)>/gi,
     (m, pre, src, post) => {
-      const abs = resolveMaybe(src);
-      const mapped =
-        urlMap.get(src) ||
-        (abs ? urlMap.get(abs) : null) ||
-        (abs
-          ? urlMap.get(new URL(abs).pathname + new URL(abs).search)
-          : null) ||
-        (abs ? urlMap.get(new URL(abs).pathname) : null);
-      if (!mapped) return m;
-      const fileAbs = join(caseDir, 'offline', mapped);
-      let js = '';
-      try {
-        js = readFileSync(fileAbs, 'utf8');
-      } catch {
-        return m;
-      }
-      const attrs = `${pre || ''} ${post || ''}`
-        .replace(/\bsrc=["'][^"']+["']/i, '')
-        .trim();
-      return `<script ${attrs} data-src="${src}">\n${js}\n</script>`;
+      const absUrl = new URL(src, targetUrl).toString();
+      const r = inlineOrRelPath({
+        fromDir,
+        caseDir,
+        urlMap,
+        absUrl,
+        inline: false,
+        maxInlineBytes,
+      });
+      if (r.kind === 'link') return m.replace(src, r.href);
+      return m;
     }
   );
+
   return html;
 }
-function writeSmoke(caseDir, html, responses) {
-  const urlMap = buildUrlMap(caseDir, responses);
-  const local = rewriteToLocal(html, urlMap);
-  const inlined = inlineCssJs(local, urlMap, caseDir);
-  const smokeLocal = join(caseDir, 'offline', 'smoke.local.html');
-  const smokeInline = join(caseDir, 'offline', 'smoke.inline.html');
-  writeText(smokeLocal, local);
-  writeText(smokeInline, inlined);
-  return { smokeLocal, smokeInline };
-}
-async function runCase(
-  runDir,
-  name,
-  opts,
-  { capture = false, smoke = false } = {}
-) {
-  if (!shouldRun(name)) return null;
-  const caseDir = makeCaseDir(runDir, name);
-  const manifest = {
-    name,
-    url: opts.url,
-    startedAt: new Date().toISOString(),
-    capture,
-    responses: [],
-    failed: [],
-    console: [],
-    errors: [],
-  };
-  console.log(`\n=== ${name} ===`);
-  console.log(`url: ${opts.url}`);
-  const t0 = Date.now();
-  const html = await request({
-    ...opts,
-    headless: HEADFUL ? false : opts.headless,
-    onCreatedPage: async (page) => {
-      if (capture) attachCapture(page, caseDir, manifest);
-      if (opts.onCreatedPage) await opts.onCreatedPage(page);
-    },
-  });
-  const ms = Date.now() - t0;
-  writeText(join(caseDir, 'html', 'page.html'), html);
-  manifest.durationMs = ms;
-  manifest.htmlBytes = Buffer.byteLength(html, 'utf8');
-  manifest.finishedAt = new Date().toISOString();
-  if (smoke && capture) {
-    const out = writeSmoke(caseDir, html, manifest.responses);
-    manifest.smoke = {
-      local: relPath(runDir, out.smokeLocal).replaceAll('\\', '/'),
-      inline: relPath(runDir, out.smokeInline).replaceAll('\\', '/'),
-    };
-    const runSmoke = join(runDir, 'smoke.html');
-    writeText(runSmoke, readFileSync(out.smokeInline, 'utf8'));
-  }
-  writeText(join(caseDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  console.log(`saved: ${join(caseDir, 'html', 'page.html')}`);
-  console.log(`bytes: ${manifest.htmlBytes}`);
-  console.log(`time:  ${ms}ms`);
-  if (capture)
-    console.log(
-      `captured responses: ${manifest.responses.length} (see manifest.json)`
-    );
-  return { caseDir, manifest, html };
-}
-async function runComponents(runDir) {
-  const name = 'components_slices';
-  if (!shouldRun(name)) return;
-  console.log(`\n=== ${name} ===`);
-  const selectors = ['head', 'header', 'main', 'footer', 'body'];
-  const caseDir = makeCaseDir(runDir, name);
-  const index = [];
-  for (const sel of selectors) {
-    const inner = await request({
-      url: TARGET,
-      wait: 'body',
-      htmlSelector: sel,
-    });
-    const wrapped = `<${sel}>${inner}</${sel}>\n`;
-    const file = join(caseDir, 'components', `${slug(sel)}.html`);
-    writeText(file, wrapped);
-    index.push({
-      selector: sel,
-      file: file.replaceAll('\\', '/'),
-      bytes: Buffer.byteLength(wrapped, 'utf8'),
-    });
-  }
-  writeText(
-    join(caseDir, 'components', 'index.json'),
-    JSON.stringify(index, null, 2)
-  );
-  console.log(`saved: ${join(caseDir, 'components')}`);
-}
-async function runManualInjected(runDir) {
-  const name = 'manual_mode_injected';
-  if (!shouldRun(name)) return;
-  const FN = '__FUEGO_SNAPSHOT__';
-  await runCase(runDir, name, {
-    url: TARGET,
-    manually: FN,
-    manualTimeoutMs: 60_000,
-    onCreatedPage: async (page) => {
-      page.once('domcontentloaded', () => {
-        setTimeout(async () => {
-          try {
-            if (page.isClosed()) return;
-            await page.evaluate((fnName) => {
-              const fn = globalThis[fnName];
-              if (typeof fn !== 'function') return;
-              fn({ content: document.documentElement.outerHTML });
-            }, FN);
-          } catch {}
-        }, 2000);
-      });
-    },
-  });
-}
-async function safe(label, fn) {
-  try {
-    await fn();
-  } catch (e) {
-    console.error(`\n[case failed] ${label}`);
-    console.error(e);
-  }
-}
-async function main() {
-  const runDir = makeRunDir();
-  console.log(`\nRun dir: ${runDir}\n`);
-  await safe('basic', () => runCase(runDir, 'basic', { url: TARGET }));
-  await safe('wait_selector_body', () =>
-    runCase(runDir, 'wait_selector_body', { url: TARGET, wait: 'body' })
-  );
-  await safe('wait_1500ms', () =>
-    runCase(runDir, 'wait_1500ms', { url: TARGET, wait: 1500 })
-  );
-  await safe('htmlSelector_body', () =>
-    runCase(runDir, 'htmlSelector_body', { url: TARGET, htmlSelector: 'body' })
-  );
-  await safe('minify_true', () =>
-    runCase(runDir, 'minify_true', { url: TARGET, minify: true })
-  );
-  await safe('resourceFilter_block_analytics', () =>
-    runCase(runDir, 'resourceFilter_block_analytics', {
-      url: TARGET,
-      resourceFilter: ({ url }) => {
-        const u = url.toLowerCase();
-        if (
-          u.includes('googletagmanager') ||
-          u.includes('google-analytics') ||
-          u.includes('gtag') ||
-          u.includes('segment') ||
-          u.includes('hotjar') ||
-          u.includes('clarity.ms')
-        ) {
-          return false;
+
+async function maybeMinifyJs({ caseDir, enabled, chunkJs }) {
+  if (!enabled) return;
+
+  // dynamic import to avoid cost when not used
+  const { minify } = await import('terser');
+
+  const jsRoots = [
+    join(caseDir, 'assets', 'js'),
+    ...listDirs(join(caseDir, 'cdn')).map((h) => join(h, 'js')),
+  ];
+
+  for (const root of jsRoots) {
+    if (!existsSync(root)) continue;
+
+    const files = walkFiles(root, new Set(['.js', '.mjs']));
+    if (!files.length) continue;
+
+    const outMin = root
+      .replace(/\/js$/i, '/js-min')
+      .replace(/\\js$/i, '\\js-min');
+    const outChunks = root
+      .replace(/\/js$/i, '/js-chunks')
+      .replace(/\\js$/i, '\\js-chunks');
+    mkdirSync(outMin, { recursive: true });
+    mkdirSync(outChunks, { recursive: true });
+
+    for (const f of files) {
+      const code = readFileSync(f, 'utf8');
+      const r = await minify(code, { compress: true, mangle: true });
+      const min = r.code ?? code;
+
+      const name = basename(f);
+      const minPath = join(outMin, name);
+      writeFileSync(minPath, min, 'utf8');
+
+      if (chunkJs && Number(chunkJs) > 0) {
+        const size = Number(chunkJs);
+        const chunks = Math.ceil(min.length / size);
+        for (let i = 0; i < chunks; i++) {
+          const part = min.slice(i * size, (i + 1) * size);
+          const partName = `${name}.part${String(i + 1).padStart(3, '0')}.js`;
+          writeFileSync(join(outChunks, partName), part, 'utf8');
         }
-        return true;
+      }
+    }
+  }
+}
+
+function sliceComponents({ html, caseDir }) {
+  const outDir = join(caseDir, 'components');
+  mkdirSync(outDir, { recursive: true });
+
+  // Very simple “component” slicing: sections + header/footer/main
+  const parts = [];
+
+  const grab = (re, label) => {
+    let m;
+    let i = 0;
+    while ((m = re.exec(html))) {
+      i++;
+      parts.push({
+        name: `${label}_${String(i).padStart(3, '0')}`,
+        html: m[0],
+      });
+    }
+  };
+
+  grab(/<header\b[\s\S]*?<\/header>/gi, 'header');
+  grab(/<main\b[\s\S]*?<\/main>/gi, 'main');
+  grab(/<section\b[\s\S]*?<\/section>/gi, 'section');
+  grab(/<footer\b[\s\S]*?<\/footer>/gi, 'footer');
+
+  // fallback: if nothing matched, dump body
+  if (!parts.length) {
+    parts.push({ name: 'document_001', html });
+  }
+
+  const index = [];
+  for (const p of parts) {
+    const file = join(outDir, `${p.name}.html`);
+    writeFileSync(file, p.html, 'utf8');
+    index.push({
+      file: toPosix(relative(caseDir, file)),
+      name: p.name,
+      bytes: Buffer.byteLength(p.html, 'utf8'),
+    });
+  }
+
+  writeFileSync(
+    join(outDir, 'index.json'),
+    JSON.stringify(index, null, 2),
+    'utf8'
+  );
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  const targetUrl = String(args.url ?? 'https://rosehillops.com/');
+  const outRoot = String(args.out ?? '.demo-out');
+
+  const only = args.only
+    ? new Set(String(args.only).split(',').map(slug))
+    : null;
+  const skip = args.skip
+    ? new Set(String(args.skip).split(',').map(slug))
+    : new Set();
+
+  const runDir = (() => {
+    const host = slug(new URL(targetUrl).hostname);
+    return join(outRoot, 'runs', `${nowId()}__${host}`);
+  })();
+
+  mkdirSync(join(runDir, 'cases'), { recursive: true });
+
+  // Allow `--debug` to work (must be set before importing dist)
+  if (args.debug) {
+    process.env.DEBUG = process.env.DEBUG || 'fuego:*';
+  }
+
+  const { request, cleanup } = await import('../dist/index.mjs');
+
+  const runMeta = {
+    target: targetUrl,
+    startedAt: new Date().toISOString(),
+    args,
+  };
+  writeFileSync(
+    join(runDir, 'run.json'),
+    JSON.stringify(runMeta, null, 2),
+    'utf8'
+  );
+
+  console.log(`\nRun dir: ${runDir}\n`);
+
+  const cases = [
+    {
+      name: 'basic',
+      opts: () => ({ url: targetUrl }),
+    },
+    {
+      name: 'wait_selector_body',
+      opts: () => ({ url: targetUrl, wait: 'body' }),
+    },
+    {
+      name: 'wait_1500ms',
+      opts: () => ({ url: targetUrl, wait: 1500 }),
+    },
+    {
+      name: 'htmlSelector_body',
+      opts: () => ({ url: targetUrl, htmlSelector: 'body' }),
+    },
+    {
+      name: 'minify_true',
+      opts: () => ({ url: targetUrl, minify: true }),
+    },
+    {
+      name: 'resourceFilter_block_analytics',
+      opts: () => ({
+        url: targetUrl,
+        resourceFilter: ({ url }) => {
+          const u = url.toLowerCase();
+          if (
+            u.includes('googletagmanager') ||
+            u.includes('google-analytics') ||
+            u.includes('gtag') ||
+            u.includes('segment') ||
+            u.includes('hotjar') ||
+            u.includes('clarity.ms')
+          ) {
+            return false;
+          }
+          return true;
+        },
+      }),
+    },
+    {
+      name: 'blockCrossOrigin_true',
+      opts: () => ({ url: targetUrl, blockCrossOrigin: true }),
+    },
+    {
+      name: 'hooks_headful',
+      opts: () => ({
+        url: targetUrl,
+        headless: args.headful ? false : false, // keep this one headful by design
+        onBeforeRequest: (url) => console.log('onBeforeRequest:', url),
+        onAfterRequest: (url) => console.log('onAfterRequest:', url),
+        onCreatedPage: async (page) => {
+          await page.setViewportSize({ width: 1280, height: 720 });
+        },
+      }),
+    },
+    {
+      name: 'capture_assets_full',
+      capture: true,
+      opts: () => ({
+        url: targetUrl,
+        // IMPORTANT: don't hang on networkidle for capture workflows
+        gotoWaitUntil: String(args.goto ?? 'domcontentloaded'),
+        gotoTimeoutMs: args.gotoTimeout ? Number(args.gotoTimeout) : 60_000,
+        wait: args.wait ? Number(args.wait) : 2500,
+        // IMPORTANT: allow CSS/img/fonts so we can build an offline smoke page
+        blockedResourceTypes: [],
+      }),
+    },
+    {
+      name: 'components_slices',
+      post: ({ html, caseDir }) => {
+        sliceComponents({ html, caseDir });
       },
-    })
-  );
-  await safe('blockCrossOrigin_true', () =>
-    runCase(runDir, 'blockCrossOrigin_true', {
-      url: TARGET,
-      blockCrossOrigin: true,
-    })
-  );
-  await safe('hooks_headful', () =>
-    runCase(runDir, 'hooks_headful', {
-      url: TARGET,
-      headless: false,
-      onBeforeRequest: (url) => console.log('onBeforeRequest:', url),
-      onAfterRequest: (url) => console.log('onAfterRequest:', url),
-      onCreatedPage: async (page) => {
-        await page.setViewportSize({ width: 1280, height: 720 });
-      },
-    })
-  );
-  await safe('capture_assets_full', () =>
-    runCase(
-      runDir,
-      'capture_assets_full',
-      {
-        url: TARGET,
-        wait: 1500,
-        blockResourceTypes: false,
-      },
-      { capture: true, smoke: true }
-    )
-  );
-  await safe('components_slices', () => runComponents(runDir));
-  await safe('manual_mode_injected', () => runManualInjected(runDir));
+      opts: () => ({
+        url: targetUrl,
+        gotoWaitUntil: 'domcontentloaded',
+        gotoTimeoutMs: 60_000,
+        blockedResourceTypes: [],
+      }),
+    },
+    {
+      name: 'manual_mode_injected',
+      opts: () => ({
+        url: targetUrl,
+        manually: true,
+        manualTimeoutMs: 30_000,
+        gotoWaitUntil: 'domcontentloaded',
+        gotoTimeoutMs: 60_000,
+        onAfterGoto: async (page) => {
+          await page.waitForLoadState('load');
+          await page.waitForTimeout(1500);
+          await page.evaluate(() => {
+            // calls the exposed function (default name: snapshot)
+            window.snapshot({ content: document.documentElement.outerHTML });
+          });
+        },
+      }),
+    },
+  ];
+
+  async function runCase(c) {
+    const nameSlug = slug(c.name);
+
+    if (only && !only.has(nameSlug)) return;
+    if (skip.has(nameSlug)) return;
+
+    const caseDir = join(runDir, 'cases', nameSlug);
+
+    const htmlDir = join(caseDir, 'html');
+    const assetsDir = join(caseDir, 'assets');
+    const cdnDir = join(caseDir, 'cdn');
+    const offlineDir = join(caseDir, 'offline');
+
+    mkdirSync(htmlDir, { recursive: true });
+    mkdirSync(assetsDir, { recursive: true });
+    mkdirSync(cdnDir, { recursive: true });
+    mkdirSync(offlineDir, { recursive: true });
+
+    const manifest = {
+      name: nameSlug,
+      url: targetUrl,
+      startedAt: new Date().toISOString(),
+      capture: Boolean(c.capture),
+      responses: [],
+      failed: [],
+      console: [],
+      errors: [],
+      durationMs: 0,
+      htmlBytes: 0,
+      finishedAt: '',
+      smokePath: null,
+    };
+
+    const urlMap = new Map();
+
+    const start = Date.now();
+    console.log(`\n=== ${nameSlug} ===`);
+    console.log(`url: ${targetUrl}`);
+
+    let pending = new Set();
+
+    const captureHooks = c.capture
+      ? {
+          onCreatedPage: async (page) => {
+            page.on('console', (msg) => {
+              manifest.console.push({ type: msg.type(), text: msg.text() });
+            });
+
+            page.on('pageerror', (err) => {
+              manifest.errors.push({
+                message: String(err?.message ?? err),
+                stack: String(err?.stack ?? ''),
+              });
+            });
+
+            page.on('requestfailed', (req) => {
+              manifest.failed.push({
+                url: req.url(),
+                type: req.resourceType(),
+                reason: req.failure()?.errorText ?? 'requestfailed',
+              });
+            });
+
+            page.on('response', (res) => {
+              const p = (async () => {
+                const req = res.request();
+                const url = res.url();
+                const type = req.resourceType();
+                const status = res.status();
+                const headers = res.headers();
+                const contentType = headers['content-type'] ?? '';
+
+                // Redirects typically have no body worth saving
+                if (status >= 300 && status < 400) return;
+
+                let body;
+                try {
+                  body = await res.body();
+                } catch (e) {
+                  manifest.failed.push({
+                    url,
+                    type,
+                    reason: 'body_failed',
+                    error: String(e),
+                  });
+                  return;
+                }
+
+                const host = new URL(url).hostname;
+                const targetHost = new URL(targetUrl).hostname;
+                const base =
+                  host === targetHost
+                    ? 'assets'
+                    : toPosix(join('cdn', slug(host)));
+
+                const bucket = chooseBucket({ url, type, contentType });
+                const fname = filenameFor(url, contentType);
+                const relPath = toPosix(join(base, bucket, fname));
+                const absPath = join(caseDir, relPath);
+
+                mkdirSync(dirname(absPath), { recursive: true });
+                writeFileSync(absPath, body);
+
+                urlMap.set(url, relPath);
+
+                manifest.responses.push({
+                  url,
+                  type,
+                  status,
+                  contentType,
+                  bytes: body.length,
+                  path: relPath,
+                });
+              })();
+
+              pending.add(p);
+              p.finally(() => pending.delete(p));
+            });
+          },
+
+          onBeforeClosingPage: async () => {
+            // Flush captured responses before request.ts closes the page/context
+            await Promise.allSettled([...pending]);
+          },
+        }
+      : {};
+
+    try {
+      const opts = c.opts();
+
+      const html = await request({
+        ...opts,
+        ...captureHooks,
+      });
+
+      const ms = Date.now() - start;
+      manifest.durationMs = ms;
+
+      const pagePath = join(htmlDir, 'page.html');
+      writeFileSync(pagePath, html, 'utf8');
+      manifest.htmlBytes = Buffer.byteLength(html, 'utf8');
+
+      // build smoke page if we captured anything
+      if (manifest.capture && manifest.responses.length) {
+        const smokeHtml = buildSmokeHtml({
+          html,
+          caseDir,
+          urlMap,
+          targetUrl,
+          maxInlineBytes: args.maxInline ? Number(args.maxInline) : 800_000,
+        });
+
+        const smokePath = join(offlineDir, 'smoke.html');
+        writeFileSync(smokePath, smokeHtml, 'utf8');
+        manifest.smokePath = toPosix(relative(caseDir, smokePath));
+      }
+
+      // post-processing (components slicing etc.)
+      if (c.post) {
+        await c.post({ html, caseDir });
+      }
+
+      // optional JS minify/chunk for captured runs
+      await maybeMinifyJs({
+        caseDir,
+        enabled: Boolean(args.minifyJs),
+        chunkJs: args.chunkJs ? Number(args.chunkJs) : 0,
+      });
+
+      manifest.finishedAt = new Date().toISOString();
+
+      writeFileSync(
+        join(caseDir, 'manifest.json'),
+        JSON.stringify(manifest, null, 2),
+        'utf8'
+      );
+
+      console.log(`saved: ${toPosix(relative(runDir, pagePath))}`);
+      console.log(`bytes: ${manifest.htmlBytes}`);
+      console.log(`time:  ${ms}ms`);
+      if (manifest.capture)
+        console.log(
+          `captured responses: ${manifest.responses.length} (see manifest.json)`
+        );
+      if (manifest.smokePath)
+        console.log(
+          `smoke: ${toPosix(
+            relative(runDir, join(caseDir, manifest.smokePath))
+          )}`
+        );
+    } catch (err) {
+      manifest.finishedAt = new Date().toISOString();
+      manifest.errors.push({
+        message: String(err?.message ?? err),
+        stack: String(err?.stack ?? ''),
+      });
+
+      writeFileSync(
+        join(caseDir, 'manifest.json'),
+        JSON.stringify(manifest, null, 2),
+        'utf8'
+      );
+
+      console.error(`\n[case failed] ${nameSlug}`);
+      console.error(err);
+    }
+  }
+
+  for (const c of cases) {
+    await runCase(c);
+  }
+
   await cleanup();
   console.log('\nDone.');
 }
+
 main().catch(async (err) => {
   console.error(err);
-  await cleanup();
   process.exit(1);
 });
