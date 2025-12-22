@@ -6,7 +6,7 @@ import type { Options as MinifyOptions } from "html-minifier-terser";
 import { closeBrowser, getOrCreateBrowser, peekBrowser, type BrowserOptions } from "./browser.js";
 import { safeURL } from "./utils.js";
 
-const debugRequest = debug("taki:request");
+const debugRequest = debug("𝓕𝓾𝓮𝓰𝓸 : 𝓡𝓮𝓺𝓾𝓮𝓼𝓽𝓼");
 
 const resourceTypeBlacklist = new Set(["stylesheet", "image", "media", "font"]);
 
