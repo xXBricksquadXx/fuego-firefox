@@ -11,7 +11,7 @@ let lastKey: string | undefined;
 function keyFor(opts: BrowserOptions) {
   return JSON.stringify({
     proxy: opts.proxy ?? null,
-    headless: opts.headless ?? true
+    headless: opts.headless ?? true,
   });
 }
 
@@ -28,7 +28,7 @@ export async function getOrCreateBrowser(opts: BrowserOptions): Promise<Browser>
   if (!browser) {
     browser = await firefox.launch({
       headless: opts.headless ?? true,
-      proxy: opts.proxy ? { server: opts.proxy } : undefined
+      proxy: opts.proxy ? { server: opts.proxy } : undefined,
     });
     lastKey = key;
   }
