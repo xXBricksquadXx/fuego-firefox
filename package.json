@@ -33,11 +33,12 @@
     "lint": "biome check .",
     "pw:install": "playwright install firefox",
 
+    "demo:install": "npm run pw:install",
+    "demo:clean": "node examples/clean.mjs",
     "demo": "npm run build && node examples/demo.mjs",
     "demo:debug": "npm run build && node examples/demo.mjs --debug",
     "demo:headful": "npm run build && node examples/demo.mjs --headful",
     "demo:minify-js": "npm run build && node examples/demo.mjs --minify-js",
-    "demo:clean": "node examples/clean.mjs",
     "demo:report": "node examples/report.mjs"
   },
   "dependencies": {
@@ -50,9 +51,9 @@
     "@types/debug": "^4.1.12",
     "@types/html-minifier-terser": "^7.0.2",
     "@types/node": "^22.0.0",
-    "esbuild": "^0.25.0",
     "get-port": "^7.1.0",
     "sirv": "^3.0.2",
+    "terser": "^5.44.0",
     "tsdown": "^0.18.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.16"
