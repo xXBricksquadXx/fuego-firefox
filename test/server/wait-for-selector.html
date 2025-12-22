@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>wait-for-selector</title>
+  </head>
+  <body>
+    <div id="root">Loading...</div>
+
+    <script>
+      setTimeout(() => {
+        const el = document.createElement("div");
+        el.id = "bar";
+        el.textContent = "bar-ready";
+        document.body.appendChild(el);
+      }, 300);
+    </script>
+  </body>
+</html>
