@@ -1,5 +1,5 @@
 {
-  "name": "taki-firefox",
+  "name": "fuego-firefox",
   "version": "0.0.0",
   "description": "HTML snapshot/prerender via Playwright (Firefox)",
   "type": "module",
@@ -32,9 +32,11 @@
     "fmt": "biome format --write .",
     "lint": "biome check .",
     "pw:install": "playwright install firefox",
+
     "demo": "npm run build && node examples/demo.mjs",
-    "demo:debug": "npm run build && node examples/demo.mjs",
-    "demo:headful": "npm run build && node examples/demo.mjs",
+    "demo:headful": "npm run build && node examples/demo.mjs --headful",
+    "demo:minify-js": "npm run build && node examples/demo.mjs --minify-js",
+    "demo:clean": "node examples/clean.mjs",
     "demo:install": "npm run pw:install"
   },
   "dependencies": {
@@ -47,6 +49,7 @@
     "@types/debug": "^4.1.12",
     "@types/html-minifier-terser": "^7.0.2",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
     "get-port": "^7.1.0",
     "sirv": "^3.0.2",
     "tsdown": "^0.18.1",
