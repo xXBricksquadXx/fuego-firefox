@@ -1,264 +1,237 @@
 # fuego-firefox
 
-A **taki-inspired** HTML snapshot / prerender utility that uses **Playwright (Firefox)**.
+HTML snapshot / prerender via Playwright (Firefox).
+</br>
 
-- Loads a URL in a real browser
-- Optionally waits for hydration / a selector / a fixed delay
-- Returns the resulting HTML (optionally minified)
-- Includes an **examples/demo** harness that can also capture assets (CSS/JS/images/fonts), minify JS, and chunk large JS into readable pieces.
+[ C͗ͅr̬͕͉̩ͮeͧ̏͑̿d̊̚i͓̹̻͍ͮ̒̒ͭt̝̖͔̓͌͋ͪ\Ĩ͔̟͚̯͌ͦň̺̼̜͊s̉̅p͖̖̘ͫ̏̈́̚i͓̹̻͍ͮ̒̒ͭr̬͕͉̩ͮaͪ͊͆t̝̖͔̓͌͋ͪi͓̹̻͍ͮ̒̒ͭõ͍ň̺̼̜͊ ](https://github.com/egoist/taki) (the original “tiny prerender” utility), but modernized around:
 
-<br>
-
-[ C͗ͅr̬͕͉̩ͮeͧ̏͑̿d̊̚i͓̹̻͍ͮ̒̒ͭt̝̖͔̓͌͋ͪ\Ĩ͔̟͚̯͌ͦň̺̼̜͊s̉̅p͖̖̘ͫ̏̈́̚i͓̹̻͍ͮ̒̒ͭr̬͕͉̩ͮaͪ͊͆t̝̖͔̓͌͋ͪi͓̹̻͍ͮ̒̒ͭõ͍ň̺̼̜͊ ](https://github.com/egoist/taki).
-
----
-
-## What this repo is for (original intent)
-
-The original “taki” pattern is optimized for **prerendering JS-heavy pages**:
-
-- Get a stable HTML snapshot for SEO, preview, or static export.
-- Keep the snapshot fast and repeatable by **blocking heavy resources by default** (CSS/images/fonts/media).
-- Provide flexible “ready” logic:
-
-  - automatic (`networkidle`)
-  - wait for selector
-  - wait fixed milliseconds
-  - **manual** “I’m ready” signal from the page (`window.snapshot({content})`)
-
-This repo keeps that intent, but modernizes:
-
-- Firefox-based Playwright runtime
-- ESM/CJS dual exports
-- Vitest for tests
-- tsdown for build
-- Biome for lint/format
-- A demo harness that produces **organized per-run/per-case output**
+- Playwright (Firefox)
+- npm-only workflow
+- TS build output (ESM + CJS via `tsdown`)
+- a demo runner that can capture assets + generate an offline “smoke” page
+- run reports (`demo:report`) for quick verification
 
 ---
 
-## Requirements
+## What this tool is for
 
-- Node `>= 20.19`
-- npm
-- Playwright Firefox browser runtime
+Given a URL, it produces an HTML snapshot suitable for:
+
+- quick SEO/prerender checks
+- build-time content snapshots
+- debugging hydration/client-render differences
+- generating “offline-ish” smoke pages to validate what you captured
+
+It is **not** a full recursive crawler. The “capture assets” mode captures responses seen during page load for a single page.
+
+---
+
+## Repo layout
+
+```
+src/
+  browser.ts     # singleton Firefox launcher (Playwright)
+  request.ts     # main request() that returns HTML
+  utils.ts
+examples/
+  demo.mjs       # demo runner: cases + capture + smoke
+  report.mjs     # generates report.html + report.json for latest run
+  clean.mjs      # wipes .demo-out
+test/
+dist/            # build output
+.demo-out/       # demo outputs (gitignored)
+```
 
 ---
 
 ## Install
 
-```bash
+```pwsh
 npm install
-npm run pw:install
+npm run demo:install     # installs Playwright’s Firefox runtime
 ```
 
 ---
 
-## Build
+## Build / Test
 
-```bash
+```pwsh
 npm run build
+npm test
 ```
-
-Artifacts go to `dist/`.
 
 ---
 
-## Library usage
+## Demo: start-to-finish workflow
 
-```js
-import { request, cleanup } from 'fuego-firefox';
+### 1) Start clean
 
-const html = await request({
-  url: 'https://example.com',
-  wait: 'body', // or 1500, or omit
-  minify: true,
-});
-
-await cleanup();
-```
-
-### Key options (RequestOptions)
-
-- `url` (string) – required
-- `wait` (string | number)
-
-  - selector: `"#app"`
-  - delay: `1500`
-
-- `htmlSelector` (string)
-
-  - returns `innerHTML` of the matched element
-
-- `minify` (boolean | html-minifier-terser options)
-- `blockCrossOrigin` (boolean)
-
-  - aborts cross-origin requests (often breaks modern sites)
-
-- `resourceFilter` ({ url, type } => boolean)
-
-  - fine-grained allow/block per request
-
-- `blockResourceTypes` (false | string[])
-
-  - **default:** blocks `stylesheet,image,media,font`
-  - `false` = don’t block by type (fetch CSS/images/fonts too)
-
-Hooks:
-
-- `onBeforeRequest(url)` / `onAfterRequest(url)`
-- `onCreatedPage(page)` / `onBeforeClosingPage(page)`
-
-Manual mode:
-
-- `manually: true | "functionName"`
-- `manualTimeoutMs` (default 30s)
-
-Manual mode waits until the page calls the exposed function, e.g. `__FUEGO_SNAPSHOT__({ content: "..." })`.
-
----
-
-## Demo harness
-
-The demo generates a **run folder** with multiple “cases”. Each case is a snapshot job.
-
-### Run the demo
-
-```bash
-npm run demo
-```
-
-### Clean previous outputs
-
-```bash
+```pwsh
 npm run demo:clean
 ```
 
-### Headful (shows Firefox)
+### 2) Run capture (best “smoke test” case)
 
-```bash
-npm run demo:headful
+`capture_assets_full` is the main “offline verification” case.
+
+```pwsh
+npm run demo:minify-js -- --only capture_assets_full --goto domcontentloaded --gotoTimeout 120000 --wait 2500
 ```
 
-### JS minify + chunking
+Notes:
 
-```bash
-npm run demo:minify-js
+- `--goto domcontentloaded` avoids hanging on `networkidle` (modern sites often never go idle).
+- `--wait 2500` gives the page time to load extra JS/CSS after initial navigation.
 
-# Force smaller chunk sizes so you see more js-chunks
-npm run demo:minify-js -- --chunk-js 20000
+### 3) Generate report
+
+```pwsh
+npm run demo:report
 ```
 
-### Target a different URL
+### 4) Open the latest report (PowerShell)
 
-```bash
-npm run demo -- --url https://rosehillops.com/
+```pwsh
+$latest = Get-ChildItem .demo-out\runs | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$report = Join-Path $latest.FullName "report.html"
+ii $report
 ```
 
-### Debug logs
+The report includes:
 
-PowerShell:
+- **page** link: raw snapshot HTML
+- **smoke** link: locally-rewritten + inlined CSS/JS (when capture was enabled)
 
-```powershell
+---
+
+## Demo runner CLI flags
+
+All demo flags are passed to `examples/demo.mjs`.
+
+### Target
+
+- `--url https://rosehillops.com/`
+
+### Select cases
+
+- `--only capture_assets_full`
+- `--skip manual_mode_injected`
+
+Comma-separated lists work:
+
+- `--only capture_assets_full,components_slices`
+
+### Capture behavior / timeouts
+
+- `--goto domcontentloaded|load|networkidle`
+- `--gotoTimeout 120000`
+- `--wait 2500`
+
+### JS minify / chunks
+
+- `--minify-js`
+- `--chunk-js 20000`
+
+Outputs are written under each case:
+
+- `assets/js/` (captured raw)
+- `assets/js-min/` (terser minified)
+- `assets/js-chunks/` (minified split into readable chunks)
+
+### Debug logging
+
+This repo uses debug namespace:
+
+- `fuego:request`
+
+Option A: enable via demo flag:
+
+```pwsh
+npm run demo:debug
+```
+
+Option B: enable manually (PowerShell):
+
+```pwsh
 $env:DEBUG="fuego:*"
 npm run demo
 ```
 
 ---
 
-## Output layout
+## Output structure & naming conventions
 
-Runs are stored under:
+Each demo run is written to:
 
 ```
-.demo-out/
-  runs/
-    <YYYYMMDD_HHMMSS__host>/
-      run.json
-      cases/
-        <case-name>/
-          html/page.html
-          manifest.json
-          components/
-          assets/
-            css/
-            js/
-            js-min/
-            js-chunks/
-            img/
-            font/
-            json/
-            other/
-          cdn/
-            <cdn-host>/...
+.demo-out/runs/<YYYYMMDD_HHMMSS>__<host>/
+  run.json
+  report.json
+  report.html
+  cases/
+    <case_name>/
+      manifest.json
+      html/page.html
+      assets/...
+      cdn/...
+      offline/smoke.html
+      components/...
 ```
 
-### How to read a case
+Key files:
 
-- `manifest.json` is the “truth”:
-
-  - duration, html bytes
-  - captured responses and file paths (for capture jobs)
-  - request failures
-  - console output
-
-### Cases included by default
-
-- `basic` – simple snapshot
-- `wait_selector_body` – waits for `body`
-- `wait_1500ms` – fixed delay
-- `htmlSelector_body` – returns `body.innerHTML`
-- `minify_true` – HTML minified output
-- `resourcefilter_block_analytics` – example allow/block
-- `blockcrossorigin_true` – cross-origin block demo
-- `hooks_headful` – hook demo (headful)
-- `capture_assets_full` – captures CSS/JS/images/fonts + optional JS minify + chunking
-- `components_slices` – saves slices for `head/header/main/footer/body`
-- `manual_mode_injected` – demonstrates manual snapshot callback
+- `run.json` – run-level metadata (target, args, timestamps)
+- `cases/<case>/manifest.json` – per-case capture log (responses, failures, console, errors)
+- `report.json` / `report.html` – summary view for the latest run
+- `offline/smoke.html` – browser verification page (CSS/JS inlined when captured)
 
 ---
 
-## Start-to-finish workflow
+## Library API (programmatic)
 
-1. Install + browser runtime
+```ts
+import { request, cleanup } from 'fuego-firefox';
 
-```bash
-npm install
-npm run pw:install
+const html = await request({
+  url: 'https://rosehillops.com/',
+  minify: true,
+});
+
+await cleanup();
 ```
 
-2. Clean old runs
+Important options:
 
-```bash
+- `blockedResourceTypes?: string[]`
+
+  - Default blocks `stylesheet,image,media,font` (fast snapshots)
+  - Set to `[]` to allow full capture workflows
+
+- `gotoWaitUntil?: "load" | "domcontentloaded" | "networkidle"`
+- `gotoTimeoutMs?: number`
+- `wait?: number | string` (delay ms or wait-for-selector)
+- `manually?: boolean | string` (manual snapshot mode)
+
+---
+
+## Common recipes (PowerShell)
+
+### Quick HTML snapshot (fast)
+
+```pwsh
+npm run demo -- --only basic
+```
+
+### Full capture + smoke page + report
+
+```pwsh
 npm run demo:clean
+npm run demo:minify-js -- --only capture_assets_full --goto domcontentloaded --gotoTimeout 120000 --wait 2500
+npm run demo:report
 ```
 
-3. Run a full capture job with JS minify + chunking
+### Only components slicing
 
-```bash
-npm run demo:minify-js -- --chunk-js 20000
+```pwsh
+npm run demo -- --only components_slices --goto domcontentloaded --gotoTimeout 120000
 ```
-
-4. Inspect output
-
-- open `.demo-out/runs/<latest>/run.json`
-- review `cases/*/manifest.json`
-- check:
-
-  - `cases/capture_assets_full/assets/js-min/`
-  - `cases/capture_assets_full/assets/js-chunks/`
-  - `cases/components_slices/components/`
-
----
-
-## Notes
-
-- `capture_assets_full` is slower because it intentionally fetches CSS/images/fonts/JS and writes them to disk.
-- `blockCrossOrigin` is mainly diagnostic; many sites rely on CDNs.
-- Manual mode is useful for SPAs where “ready” is app-defined.
-
----
-
-## License
-
-MIT
