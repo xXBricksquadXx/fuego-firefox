@@ -1,330 +1,259 @@
 # fuego-firefox
 
-A minimal **HTML snapshot / prerender** utility powered by **Playwright (Firefox)**.
+A **taki-inspired** HTML snapshot / prerender utility that uses **Playwright (Firefox)**.
 
-This project is a modern refactor inspired by **egoist/taki** (legacy Puppeteer/Chromium implementation):
+- Loads a URL in a real browser
+- Optionally waits for hydration / a selector / a fixed delay
+- Returns the resulting HTML (optionally minified)
+- Includes an **examples/demo** harness that can also capture assets (CSS/JS/images/fonts), minify JS, and chunk large JS into readable pieces.
 
-- [https://github.com/egoist/taki](https://github.com/egoist/taki)
-
-It keeps the same core idea:
-
-- open a page
-- optionally block heavy/irrelevant resources
-- wait for the right moment
-- return HTML (optionally minified)
-
-…but swaps the stack to:
-
-- **Playwright (Firefox)** instead of Puppeteer/Chromium
-- **npm** (no Yarn)
-- modern TypeScript + ESM build
-- **Vitest** for snapshot tests
-- **Biome** for formatting/lint
+Inspired by `egoist/taki`.
 
 ---
 
-## Quick start
+## What this repo is for (original intent)
 
-### Prereqs
+The original “taki” pattern is optimized for **prerendering JS-heavy pages**:
 
-- Node.js **20+**
+- Get a stable HTML snapshot for SEO, preview, or static export.
+- Keep the snapshot fast and repeatable by **blocking heavy resources by default** (CSS/images/fonts/media).
+- Provide flexible “ready” logic:
+
+  - automatic (`networkidle`)
+  - wait for selector
+  - wait fixed milliseconds
+  - **manual** “I’m ready” signal from the page (`window.snapshot({content})`)
+
+This repo keeps that intent, but modernizes:
+
+- Firefox-based Playwright runtime
+- ESM/CJS dual exports
+- Vitest for tests
+- tsdown for build
+- Biome for lint/format
+- A demo harness that produces **organized per-run/per-case output**
+
+---
+
+## Requirements
+
+- Node `>= 20.19`
 - npm
+- Playwright Firefox browser runtime
 
-### Clone → install → test
+---
+
+## Install
 
 ```bash
-git clone <your-repo-url>
-cd fuego-firefox
-
 npm install
-
-# Install the Firefox binary Playwright uses
-npx playwright install firefox
-
-# Run tests (starts a local fixture server)
-npm test
+npm run pw:install
 ```
 
-### Build
+---
+
+## Build
 
 ```bash
 npm run build
 ```
 
----
-
-## Useful commands
-
-| Command              | What it does                      |
-| -------------------- | --------------------------------- |
-| `npm test`           | Run the test suite once (Vitest)  |
-| `npm run test:watch` | Watch mode for tests              |
-| `npm run build`      | Build `dist/` (ESM + CJS + types) |
-| `npm run dev`        | Build in watch mode               |
-| `npm run fmt`        | Format codebase (Biome)           |
-| `npm run lint`       | Lint/check codebase (Biome)       |
-| `npm run pw:install` | Install Playwright Firefox binary |
+Artifacts go to `dist/`.
 
 ---
 
-## Project layout
+## Library usage
 
-```
-fuego-firefox/
-  src/
-    index.ts        # public API exports
-    browser.ts      # singleton browser lifecycle
-    request.ts      # request() implementation
-    utils.ts        # small helpers
-  test/
-    index.test.ts   # snapshot tests
-    server/         # HTML fixtures
-```
-
----
-
-## Usage
-
-### Basic snapshot
-
-```ts
+```js
 import { request, cleanup } from 'fuego-firefox';
 
 const html = await request({
   url: 'https://example.com',
-});
-
-console.log(html);
-await cleanup();
-```
-
-### Wait for a selector
-
-```ts
-const html = await request({
-  url: 'https://example.com/app',
-  wait: '#app-ready', // waits for selector
-});
-```
-
-### Wait a fixed delay
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  wait: 1500, // ms
-});
-```
-
-### Return only a subtree (`htmlSelector`)
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  htmlSelector: '#app', // returns innerHTML of #app
-});
-```
-
-### Minify output
-
-```ts
-const html = await request({
-  url: 'https://example.com',
+  wait: 'body', // or 1500, or omit
   minify: true,
 });
-```
-
-You can also pass minifier options:
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  minify: {
-    collapseWhitespace: true,
-    minifyCSS: true,
-    minifyJS: true,
-  },
-});
-```
-
----
-
-## Manual mode (page-controlled snapshot)
-
-Manual mode is useful when the page itself knows when it is “ready” (after custom hydration, API calls, etc.).
-
-When `manually: true`, the browser exposes a function on `window` (default name `snapshot`). Your page calls it with `{ content }`.
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  manually: true,
-  manualTimeoutMs: 30_000,
-});
-```
-
-In the page:
-
-```js
-// somewhere in page JS
-window.snapshot({ content: document.documentElement.outerHTML });
-```
-
-If you want a custom function name:
-
-```ts
-await request({
-  url: 'https://example.com',
-  manually: 'done',
-});
-```
-
-Then the page calls:
-
-```js
-window.done({ content: document.documentElement.outerHTML });
-```
-
----
-
-## Request/response control
-
-### Resource blocking
-
-By default, these are blocked to speed things up:
-
-- `stylesheet`
-- `image`
-- `media`
-- `font`
-
-You can add your own filter:
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  resourceFilter: ({ url, type }) => {
-    // allow scripts + documents; block analytics
-    if (url.includes('googletagmanager')) return false;
-    return true;
-  },
-});
-```
-
-### Cross-origin blocking
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  blockCrossOrigin: true,
-});
-```
-
-### Hooks
-
-```ts
-const html = await request({
-  url: 'https://example.com',
-  onBeforeRequest: (url) => console.log('start', url),
-  onAfterRequest: (url) => console.log('done', url),
-  onCreatedPage: async (page) => {
-    // set cookies, localStorage, extra headers, etc.
-    await page.setExtraHTTPHeaders({ 'X-Debug': '1' });
-  },
-  onBeforeClosingPage: async (page) => {
-    // last-chance screenshots/logging, etc.
-  },
-});
-```
-
----
-
-## Browser lifecycle
-
-- The library keeps a **singleton** Playwright browser instance.
-- The instance is reused across multiple `request()` calls.
-- Call `cleanup()` when your process is done.
-
-```ts
-import { request, cleanup, getBrowser } from 'fuego-firefox';
-
-await request({ url: 'https://example.com' });
-console.log(Boolean(getBrowser())); // true
 
 await cleanup();
-console.log(Boolean(getBrowser())); // false
 ```
 
----
+### Key options (RequestOptions)
 
-## Options (API)
+- `url` (string) – required
+- `wait` (string | number)
 
-### `request(options)`
+  - selector: `"#app"`
+  - delay: `1500`
 
-Required:
+- `htmlSelector` (string)
 
-- `url: string`
+  - returns `innerHTML` of the matched element
 
-Timing:
+- `minify` (boolean | html-minifier-terser options)
+- `blockCrossOrigin` (boolean)
 
-- `wait?: number | string` (ms or CSS selector)
-- `manually?: boolean | string`
-- `manualTimeoutMs?: number` (default `30000`, set `0` for no timeout)
+  - aborts cross-origin requests (often breaks modern sites)
 
-HTML selection:
+- `resourceFilter` ({ url, type } => boolean)
 
-- `htmlSelector?: string` (returns `innerHTML` of selector)
+  - fine-grained allow/block per request
 
-Output:
+- `blockResourceTypes` (false | string[])
 
-- `minify?: boolean | MinifyOptions`
-
-Network controls:
-
-- `blockCrossOrigin?: boolean`
-- `resourceFilter?: ({ url, type }) => boolean`
-
-Browser controls:
-
-- `headless?: boolean` (default `true`)
-- `proxy?: string` (example: `"http://127.0.0.1:8080"`)
-- `userAgent?: string`
+  - **default:** blocks `stylesheet,image,media,font`
+  - `false` = don’t block by type (fetch CSS/images/fonts too)
 
 Hooks:
 
-- `onBeforeRequest?: (url) => void`
-- `onAfterRequest?: (url) => void`
-- `onCreatedPage?: (page) => void | Promise<void>`
-- `onBeforeClosingPage?: (page) => void | Promise<void>`
+- `onBeforeRequest(url)` / `onAfterRequest(url)`
+- `onCreatedPage(page)` / `onBeforeClosingPage(page)`
+
+Manual mode:
+
+- `manually: true | "functionName"`
+- `manualTimeoutMs` (default 30s)
+
+Manual mode waits until the page calls the exposed function, e.g. `__FUEGO_SNAPSHOT__({ content: "..." })`.
 
 ---
 
-## Development notes
+## Demo harness
 
-- TypeScript module resolution uses `Bundler` mode, so internal imports omit file extensions.
-- Build outputs are emitted to `dist/` as ESM + CJS, with type declarations.
+The demo generates a **run folder** with multiple “cases”. Each case is a snapshot job.
+
+### Run the demo
+
+```bash
+npm run demo
+```
+
+### Clean previous outputs
+
+```bash
+npm run demo:clean
+```
+
+### Headful (shows Firefox)
+
+```bash
+npm run demo:headful
+```
+
+### JS minify + chunking
+
+```bash
+npm run demo:minify-js
+
+# Force smaller chunk sizes so you see more js-chunks
+npm run demo:minify-js -- --chunk-js 20000
+```
+
+### Target a different URL
+
+```bash
+npm run demo -- --url https://rosehillops.com/
+```
+
+### Debug logs
+
+PowerShell:
+
+```powershell
+$env:DEBUG="fuego:*"
+npm run demo
+```
 
 ---
 
-## Troubleshooting
+## Output layout
 
-### Playwright can’t launch Firefox
+Runs are stored under:
 
-Run:
-
-```bash
-npx playwright install firefox
+```
+.demo-out/
+  runs/
+    <YYYYMMDD_HHMMSS__host>/
+      run.json
+      cases/
+        <case-name>/
+          html/page.html
+          manifest.json
+          components/
+          assets/
+            css/
+            js/
+            js-min/
+            js-chunks/
+            img/
+            font/
+            json/
+            other/
+          cdn/
+            <cdn-host>/...
 ```
 
-On Linux CI you may also need:
+### How to read a case
+
+- `manifest.json` is the “truth”:
+
+  - duration, html bytes
+  - captured responses and file paths (for capture jobs)
+  - request failures
+  - console output
+
+### Cases included by default
+
+- `basic` – simple snapshot
+- `wait_selector_body` – waits for `body`
+- `wait_1500ms` – fixed delay
+- `htmlSelector_body` – returns `body.innerHTML`
+- `minify_true` – HTML minified output
+- `resourcefilter_block_analytics` – example allow/block
+- `blockcrossorigin_true` – cross-origin block demo
+- `hooks_headful` – hook demo (headful)
+- `capture_assets_full` – captures CSS/JS/images/fonts + optional JS minify + chunking
+- `components_slices` – saves slices for `head/header/main/footer/body`
+- `manual_mode_injected` – demonstrates manual snapshot callback
+
+---
+
+## Start-to-finish workflow
+
+1. Install + browser runtime
 
 ```bash
-npx playwright install-deps firefox
+npm install
+npm run pw:install
 ```
 
-### Tests hang
+2. Clean old runs
 
-If you’re using `manually: true`, make sure your page actually calls the exposed function (`window.snapshot(...)` by default). Otherwise the request will wait until `manualTimeoutMs`.
+```bash
+npm run demo:clean
+```
+
+3. Run a full capture job with JS minify + chunking
+
+```bash
+npm run demo:minify-js -- --chunk-js 20000
+```
+
+4. Inspect output
+
+- open `.demo-out/runs/<latest>/run.json`
+- review `cases/*/manifest.json`
+- check:
+
+  - `cases/capture_assets_full/assets/js-min/`
+  - `cases/capture_assets_full/assets/js-chunks/`
+  - `cases/components_slices/components/`
+
+---
+
+## Notes
+
+- `capture_assets_full` is slower because it intentionally fetches CSS/images/fonts/JS and writes them to disk.
+- `blockCrossOrigin` is mainly diagnostic; many sites rely on CDNs.
+- Manual mode is useful for SPAs where “ready” is app-defined.
 
 ---
 
