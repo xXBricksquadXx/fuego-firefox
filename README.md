@@ -7,7 +7,9 @@ A **taki-inspired** HTML snapshot / prerender utility that uses **Playwright (Fi
 - Returns the resulting HTML (optionally minified)
 - Includes an **examples/demo** harness that can also capture assets (CSS/JS/images/fonts), minify JS, and chunk large JS into readable pieces.
 
-Inspired by `egoist/taki`.
+<br>
+
+[ C͗ͅr̬͕͉̩ͮeͧ̏͑̿d̊̚i͓̹̻͍ͮ̒̒ͭt̝̖͔̓͌͋ͪ\Ĩ͔̟͚̯͌ͦň̺̼̜͊s̉̅p͖̖̘ͫ̏̈́̚i͓̹̻͍ͮ̒̒ͭr̬͕͉̩ͮaͪ͊͆t̝̖͔̓͌͋ͪi͓̹̻͍ͮ̒̒ͭõ͍ň̺̼̜͊ ](https://github.com/egoist/taki).
 
 ---
 
