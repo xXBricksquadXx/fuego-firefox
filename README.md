@@ -1,5 +1,6 @@
-# fuego-firefox
+<img width="1536" height="543" alt="fuego-firefox" src="https://github.com/user-attachments/assets/886b64f4-f3d7-476e-8e79-a3d29ac58afe" />
 
+---
 HTML snapshot / prerender via Playwright (Firefox).
 </br>
 
