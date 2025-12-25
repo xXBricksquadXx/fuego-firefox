@@ -1,21 +1,16 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-
 const OUTROOT = '.demo-out';
-
 function toPosix(p) {
   return p.replace(/\\/g, '/');
 }
-
 function latestRunDir() {
   const runsDir = join(OUTROOT, 'runs');
   if (!existsSync(runsDir)) throw new Error(`No runs found at: ${runsDir}`);
   const dirs = readdirSync(runsDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => join(runsDir, d.name));
-
   if (!dirs.length) throw new Error(`No runs found at: ${runsDir}`);
-
   dirs.sort((a, b) => {
     const sa = a.toLowerCase();
     const sb = b.toLowerCase();
@@ -23,7 +18,6 @@ function latestRunDir() {
   });
   return dirs[0];
 }
-
 function safeJson(path) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
@@ -31,7 +25,6 @@ function safeJson(path) {
     return null;
   }
 }
-
 function escapeHtml(s) {
   return String(s)
     .replaceAll('&', '&amp;')
@@ -40,37 +33,29 @@ function escapeHtml(s) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
 }
-
 function main() {
   const runDir = latestRunDir();
   const runJson = safeJson(join(runDir, 'run.json')) ?? {};
-
   const casesDir = join(runDir, 'cases');
   const caseNames = existsSync(casesDir)
     ? readdirSync(casesDir, { withFileTypes: true })
         .filter((d) => d.isDirectory())
         .map((d) => d.name)
     : [];
-
   const rows = [];
-
   for (const name of caseNames) {
     const caseDir = join(casesDir, name);
     const manifestPath = join(caseDir, 'manifest.json');
     const manifest = safeJson(manifestPath);
-
-    // fallback: infer page.html existence
     const pageRel = toPosix(join('cases', name, 'html', 'page.html'));
     const smokeRel = toPosix(join('cases', name, 'offline', 'smoke.html'));
     const hasPage = existsSync(join(runDir, pageRel));
     const hasSmoke = existsSync(join(runDir, smokeRel));
-
     const ms = manifest?.durationMs ?? null;
     const htmlBytes = manifest?.htmlBytes ?? null;
     const captured = manifest?.responses?.length ?? 0;
     const failed = manifest?.failed?.length ?? 0;
     const errCount = manifest?.errors?.length ?? 0;
-
     const status = manifest
       ? errCount > 0
         ? 'failed'
@@ -78,7 +63,6 @@ function main() {
       : hasPage
       ? 'partial'
       : 'missing';
-
     rows.push({
       name,
       pageRel: hasPage ? pageRel : null,
@@ -91,10 +75,7 @@ function main() {
       status,
     });
   }
-
-  // Sort stable
   rows.sort((a, b) => a.name.localeCompare(b.name));
-
   const report = {
     runDir: toPosix(runDir),
     target: runJson.target ?? null,
@@ -102,10 +83,8 @@ function main() {
     cases: rows,
     generatedAt: new Date().toISOString(),
   };
-
   const reportJsonPath = join(runDir, 'report.json');
   writeFileSync(reportJsonPath, JSON.stringify(report, null, 2), 'utf8');
-
   const html = `<!doctype html>
 <html>
 <head>
@@ -124,10 +103,8 @@ function main() {
 </head>
 <body>
   <h1>Run report</h1>
-
   <p><code>${escapeHtml(toPosix(runDir))}</code></p>
   <p>Target: <code>${escapeHtml(report.target ?? '')}</code></p>
-
   <table>
     <thead>
       <tr>
@@ -172,20 +149,16 @@ function main() {
         .join('\n')}
     </tbody>
   </table>
-
   <h2>Notes</h2>
   <ul>
     <li><code>page</code> links open the raw snapshot.</li>
     <li><code>smoke</code> links open the locally-rewritten + inlined version for quick browser verification.</li>
     <li>Failed cases still show up here (so you always have a record of what happened).</li>
   </ul>
-
 </body>
 </html>`;
-
   const reportHtmlPath = join(runDir, 'report.html');
   writeFileSync(reportHtmlPath, html, 'utf8');
-
   console.log(`\nRun: ${toPosix(runDir)}`);
   console.log(`Target: ${report.target ?? ''}\n`);
   console.log(
@@ -201,9 +174,7 @@ function main() {
       `${r.name.padEnd(28)} ${ms} ${hb} ${cap} ${fail} ${err} ${r.status}`
     );
   }
-
   console.log(`\nWrote: ${toPosix(reportJsonPath)}`);
   console.log(`Wrote: ${toPosix(reportHtmlPath)}\n`);
 }
-
 main();
