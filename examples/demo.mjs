@@ -4,10 +4,10 @@ import {
   readFileSync,
   existsSync,
   readdirSync,
-  statSync,
 } from 'node:fs';
 import { join, dirname, relative, extname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
+
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -31,6 +31,7 @@ function parseArgs(argv) {
   }
   return out;
 }
+
 function nowId() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -38,6 +39,7 @@ function nowId() {
     d.getHours()
   )}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
+
 function slug(s) {
   return String(s)
     .trim()
@@ -45,18 +47,22 @@ function slug(s) {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
 }
+
 function sha1(s) {
   return createHash('sha1').update(s).digest('hex').slice(0, 10);
 }
+
 function toPosix(p) {
   return p.replace(/\\/g, '/');
 }
+
 function listDirs(p) {
   if (!existsSync(p)) return [];
   return readdirSync(p, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => join(p, d.name));
 }
+
 function walkFiles(root, exts) {
   const out = [];
   const stack = [root];
@@ -71,6 +77,7 @@ function walkFiles(root, exts) {
   }
   return out;
 }
+
 function chooseBucket({ url, type, contentType }) {
   const u = url.toLowerCase();
   const ct = (contentType ?? '').toLowerCase();
@@ -88,8 +95,14 @@ function chooseBucket({ url, type, contentType }) {
   if (ct.includes('json') || u.endsWith('.json')) return 'json';
   return 'other';
 }
+
+/**
+ * FIXED: Truncates long filenames to prevent Windows ENOENT errors.
+ * We slice the slug to 64 chars to keep paths under the 260 limit.
+ */
 function filenameFor(url, contentType) {
-  let ext = extname(new URL(url).pathname);
+  const urlObj = new URL(url);
+  let ext = extname(urlObj.pathname);
   if (!ext) {
     const ct = (contentType ?? '').toLowerCase();
     if (ct.includes('text/css')) ext = '.css';
@@ -100,13 +113,16 @@ function filenameFor(url, contentType) {
     else if (ct.startsWith('font/')) ext = `.${ct.split('/')[1].split(';')[0]}`;
     else ext = '.bin';
   }
-  const base = basename(new URL(url).pathname) || 'asset';
+  const base = basename(urlObj.pathname) || 'asset';
   const cleanBase = slug(base.replace(extname(base), '')) || 'asset';
-  return `${cleanBase}_${sha1(url)}${ext}`;
+  // Use a slice to ensure Windows doesn't choke on the path length
+  return `${cleanBase.slice(0, 64)}_${sha1(url)}${ext}`;
 }
+
 function relFrom(baseDir, absPath) {
   return toPosix(relative(baseDir, absPath));
 }
+
 function inlineOrRelPath({
   fromDir,
   caseDir,
@@ -126,6 +142,7 @@ function inlineOrRelPath({
   const rel = relFrom(fromDir, absPath);
   return { kind: 'link', href: rel };
 }
+
 function buildSmokeHtml({
   html,
   caseDir,
@@ -196,6 +213,7 @@ function buildSmokeHtml({
   );
   return html;
 }
+
 async function maybeMinifyJs({ caseDir, enabled, chunkJs }) {
   if (!enabled) return;
   const { minify } = await import('terser');
@@ -234,6 +252,7 @@ async function maybeMinifyJs({ caseDir, enabled, chunkJs }) {
     }
   }
 }
+
 function sliceComponents({ html, caseDir }) {
   const outDir = join(caseDir, 'components');
   mkdirSync(outDir, { recursive: true });
@@ -272,9 +291,10 @@ function sliceComponents({ html, caseDir }) {
     'utf8'
   );
 }
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const targetUrl = String(args.url ?? 'enter URL here');
+  const targetUrl = String(args.url ?? 'example.net');
   const outRoot = String(args.out ?? '.demo-out');
   const only = args.only
     ? new Set(String(args.only).split(',').map(slug))
@@ -499,7 +519,10 @@ async function main() {
             });
           },
           onBeforeClosingPage: async () => {
+            // HARDENING: Wait for all pending writes, plus a settle timeout
+            // to ensure OneDrive or slow disk catches up.
             await Promise.allSettled([...pending]);
+            await new Promise((r) => setTimeout(r, 500));
           },
         }
       : {};
